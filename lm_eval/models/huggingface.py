@@ -72,6 +72,7 @@ class HuggingFaceAutoLM(BaseLM):
     def __init__(
         self,
         pretrained: str,
+        weight_path: Optional[str] = None,
         quantized: Optional[Union[bool, str]] = False,
         tokenizer: Optional[str] = None,
         subfolder: Optional[str] = None,
