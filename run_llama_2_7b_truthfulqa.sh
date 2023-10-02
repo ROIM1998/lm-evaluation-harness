@@ -6,4 +6,5 @@ python main.py \
     --num_fewshot 0 \
     --tasks truthfulqa_mc \
     --device cuda:0 \
+    --batch_size 4 \
     --output_path "${weight_path}/truthfulqa_mc_results.json" \
