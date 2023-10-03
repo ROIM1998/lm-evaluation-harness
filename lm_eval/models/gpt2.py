@@ -8,6 +8,7 @@ from lm_eval.base import BaseLM
 from tqdm import tqdm
 
 from transformers.modeling_utils import prune_linear_layer
+from lm_eval.models.modeling_llama import ElasticLlamaForCausalLM
 
 def smart_tokenizer_and_embedding_resize(
     special_tokens_dict: Dict,
@@ -104,7 +105,7 @@ class HFLM(BaseLM):
             revision = revision + ("/" + subfolder if subfolder is not None else "")
 
             # Initialize new model and tokenizer instances
-            self.model = transformers.AutoModelForCausalLM.from_pretrained(
+            self.model = ElasticLlamaForCausalLM.from_pretrained(
                 pretrained,
                 load_in_8bit=load_in_8bit,
                 low_cpu_mem_usage=low_cpu_mem_usage,
@@ -153,51 +154,69 @@ class HFLM(BaseLM):
                 if model_dim == config.hidden_size:
                     remained_dim = None
                 else:
-                    remained_dim = torch.arange(model_dim)
+                    remained_dim = torch.arange(model_dim).to(model.device)
                     model.model.embed_tokens.weight = torch.nn.parameter.Parameter(
                         model.model.embed_tokens.weight.index_select(1, remained_dim).detach().clone()
-                    )
+                    ).to(model.device)
                     model.model.embed_tokens.embedding_dim = remained_dim.shape[0]
                     model.model.norm.weight = torch.nn.parameter.Parameter(
                         model.model.norm.weight.index_select(0, remained_dim).detach().clone()
-                    )
+                    ).to(model.device)
                 dim_per_head = config.hidden_size // config.num_attention_heads
                 for i_layer in range(config.num_hidden_layers):
-                    head_dim = weights['model.layers.%d.self_attn.q_proj.weight' % i_layer].shape[0]
-                    remained_head_dim = torch.arange(head_dim) if head_dim != config.hidden_size else None
-                    if remained_head_dim is not None:
-                        print("Pruning head dim to %d in layer %d" % (remained_head_dim.shape[0], i_layer))
-                        model.model.layers[i_layer].self_attn.q_proj = prune_linear_layer(model.model.layers[i_layer].self_attn.q_proj, remained_head_dim, dim=0)
-                        model.model.layers[i_layer].self_attn.k_proj = prune_linear_layer(model.model.layers[i_layer].self_attn.k_proj, remained_head_dim, dim=0)
-                        model.model.layers[i_layer].self_attn.v_proj = prune_linear_layer(model.model.layers[i_layer].self_attn.v_proj, remained_head_dim, dim=0)
-                        model.model.layers[i_layer].self_attn.o_proj = prune_linear_layer(model.model.layers[i_layer].self_attn.o_proj, remained_head_dim, dim=1)
-                        model.model.layers[i_layer].self_attn.num_heads = remained_head_dim.shape[0] // dim_per_head
-                        model.model.layers[i_layer].self_attn.num_key_value_heads = remained_head_dim.shape[0] // dim_per_head
-                        model.model.layers[i_layer].self_attn.hidden_size = remained_head_dim.shape[0]
+                    if ('model.layers.%d.self_attn.q_proj.weight' % i_layer) in weights:
+                        head_dim = weights['model.layers.%d.self_attn.q_proj.weight' % i_layer].shape[0]
+                        remained_head_dim = torch.arange(head_dim) if head_dim != config.hidden_size else None
+                        if remained_head_dim is not None:
+                            print("Pruning head dim to %d in layer %d" % (remained_head_dim.shape[0], i_layer))
+                            model.model.layers[i_layer].self_attn.q_proj = prune_linear_layer(model.model.layers[i_layer].self_attn.q_proj, remained_head_dim, dim=0)
+                            model.model.layers[i_layer].self_attn.k_proj = prune_linear_layer(model.model.layers[i_layer].self_attn.k_proj, remained_head_dim, dim=0)
+                            model.model.layers[i_layer].self_attn.v_proj = prune_linear_layer(model.model.layers[i_layer].self_attn.v_proj, remained_head_dim, dim=0)
+                            model.model.layers[i_layer].self_attn.o_proj = prune_linear_layer(model.model.layers[i_layer].self_attn.o_proj, remained_head_dim, dim=1)
+                            model.model.layers[i_layer].self_attn.num_heads = remained_head_dim.shape[0] // dim_per_head
+                            model.model.layers[i_layer].self_attn.num_key_value_heads = remained_head_dim.shape[0] // dim_per_head
+                            model.model.layers[i_layer].self_attn.hidden_size = remained_head_dim.shape[0]
+                    else:
+                        print("Pruning-out head dim to in layer %d" % i_layer)
+                        model.model.layers[i_layer].self_attn.q_proj = None
+                        model.model.layers[i_layer].self_attn.k_proj = None
+                        model.model.layers[i_layer].self_attn.v_proj = None
+                        model.model.layers[i_layer].self_attn.o_proj = None
+                        model.model.layers[i_layer].self_attn.num_heads = 0
+                        model.model.layers[i_layer].self_attn.num_key_value_heads = 0
+                        model.model.layers[i_layer].self_attn.hidden_size = 0
                     
-                    ffn_dim = weights['model.layers.%d.mlp.up_proj.weight' % i_layer].shape[0]
-                    remained_ffn_dim = torch.arange(ffn_dim) if ffn_dim != config.intermediate_size else None
-                    if remained_ffn_dim is not None:
-                        print("Pruning ffn dim to %d in layer %d" % (remained_ffn_dim.shape[0], i_layer))
-                        model.model.layers[i_layer].mlp.up_proj = prune_linear_layer(model.model.layers[i_layer].mlp.up_proj, remained_ffn_dim, dim=0)
-                        model.model.layers[i_layer].mlp.gate_proj = prune_linear_layer(model.model.layers[i_layer].mlp.gate_proj, remained_ffn_dim, dim=0)
-                        model.model.layers[i_layer].mlp.down_proj = prune_linear_layer(model.model.layers[i_layer].mlp.down_proj, remained_ffn_dim, dim=1)
+                    if ('model.layers.%d.mlp.up_proj.weight' % i_layer) in weights:
+                        ffn_dim = weights['model.layers.%d.mlp.up_proj.weight' % i_layer].shape[0]
+                        remained_ffn_dim = torch.arange(ffn_dim) if ffn_dim != config.intermediate_size else None
+                        if remained_ffn_dim is not None:
+                            print("Pruning ffn dim to %d in layer %d" % (remained_ffn_dim.shape[0], i_layer))
+                            model.model.layers[i_layer].mlp.up_proj = prune_linear_layer(model.model.layers[i_layer].mlp.up_proj, remained_ffn_dim, dim=0)
+                            model.model.layers[i_layer].mlp.gate_proj = prune_linear_layer(model.model.layers[i_layer].mlp.gate_proj, remained_ffn_dim, dim=0)
+                            model.model.layers[i_layer].mlp.down_proj = prune_linear_layer(model.model.layers[i_layer].mlp.down_proj, remained_ffn_dim, dim=1)
+                    else:
+                        print("Pruning-out ffn dim to in layer %d" % i_layer)
+                        model.model.layers[i_layer].mlp.up_proj = None
+                        model.model.layers[i_layer].mlp.gate_proj = None
+                        model.model.layers[i_layer].mlp.down_proj = None
                         
                     if remained_dim is not None:
                         print("Pruning hidden dim to %d in layer %d" % (remained_dim.shape[0], i_layer))
-                        model.model.layers[i_layer].self_attn.q_proj = prune_linear_layer(model.model.layers[i_layer].self_attn.q_proj, remained_dim, dim=1)
-                        model.model.layers[i_layer].self_attn.k_proj = prune_linear_layer(model.model.layers[i_layer].self_attn.k_proj, remained_dim, dim=1)
-                        model.model.layers[i_layer].self_attn.v_proj = prune_linear_layer(model.model.layers[i_layer].self_attn.v_proj, remained_dim, dim=1)
-                        model.model.layers[i_layer].self_attn.o_proj = prune_linear_layer(model.model.layers[i_layer].self_attn.o_proj, remained_dim, dim=0)
-                        model.model.layers[i_layer].mlp.up_proj = prune_linear_layer(model.model.layers[i_layer].mlp.up_proj, remained_dim, dim=1)
-                        model.model.layers[i_layer].mlp.gate_proj = prune_linear_layer(model.model.layers[i_layer].mlp.gate_proj, remained_dim, dim=1)
-                        model.model.layers[i_layer].mlp.down_proj = prune_linear_layer(model.model.layers[i_layer].mlp.down_proj, remained_dim, dim=0)
+                        if model.model.layers[i_layer].self_attn.q_proj is not None:
+                            model.model.layers[i_layer].self_attn.q_proj = prune_linear_layer(model.model.layers[i_layer].self_attn.q_proj, remained_dim, dim=1)
+                            model.model.layers[i_layer].self_attn.k_proj = prune_linear_layer(model.model.layers[i_layer].self_attn.k_proj, remained_dim, dim=1)
+                            model.model.layers[i_layer].self_attn.v_proj = prune_linear_layer(model.model.layers[i_layer].self_attn.v_proj, remained_dim, dim=1)
+                            model.model.layers[i_layer].self_attn.o_proj = prune_linear_layer(model.model.layers[i_layer].self_attn.o_proj, remained_dim, dim=0)
+                        if model.model.layers[i_layer].mlp.up_proj is not None:
+                            model.model.layers[i_layer].mlp.up_proj = prune_linear_layer(model.model.layers[i_layer].mlp.up_proj, remained_dim, dim=1)
+                            model.model.layers[i_layer].mlp.gate_proj = prune_linear_layer(model.model.layers[i_layer].mlp.gate_proj, remained_dim, dim=1)
+                            model.model.layers[i_layer].mlp.down_proj = prune_linear_layer(model.model.layers[i_layer].mlp.down_proj, remained_dim, dim=0)
                         model.model.layers[i_layer].input_layernorm.weight = nn.Parameter(
                             model.model.layers[i_layer].input_layernorm.weight.index_select(0, remained_dim).detach().clone()
-                        )
+                        ).to(model.device)
                         model.model.layers[i_layer].post_attention_layernorm.weight = nn.Parameter(
                             model.model.layers[i_layer].post_attention_layernorm.weight.index_select(0, remained_dim).detach().clone()
-                        )
+                        ).to(model.device)
                 
                 model.load_state_dict(weights, strict=True)
                 model = model.to(model_dtype)
