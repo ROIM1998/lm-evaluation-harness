@@ -7,4 +7,4 @@ python main.py \
     --tasks hendrycksTest-* \
     --device cuda:0 \
     --batch_size 4 \
-    --output_path "${weight_path}/mmlu_results" \
+    --output_path "${weight_path}/mmlu_results.json" \
