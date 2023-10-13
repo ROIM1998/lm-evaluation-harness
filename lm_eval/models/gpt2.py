@@ -127,7 +127,7 @@ class HFLM(BaseLM):
                 weights = {k: v for w in weights for k, v in w.items()}
                 lora_keys = [k for k in weights.keys() if 'lora' in k]
                 print("Dropping lora keys: %s, %d keys in total." % (lora_keys, len(lora_keys)))
-                weights = {k: v for k, v in weights.items() if 'lora' not in k and 'transform' not in k}
+                weights = {k: v for k, v in weights.items() if 'lora' not in k and 'transform' not in k and 'inv_freq' not in k} # Drop LoRA weights, transformation layer, and inv_freq in rope embeddings
                 # Deducing pruned dimensions of the LLaMA model
                 config: transformers.LlamaConfig = model.config
                 vocab_size, model_dim = weights['model.embed_tokens.weight'].shape
@@ -162,6 +162,7 @@ class HFLM(BaseLM):
                     model.model.norm.weight = torch.nn.parameter.Parameter(
                         model.model.norm.weight.index_select(0, remained_dim).detach().clone()
                     ).to(model.device)
+                    model.lm_head = prune_linear_layer(model.lm_head, remained_dim, dim=1)
                 dim_per_head = config.hidden_size // config.num_attention_heads
                 for i_layer in range(config.num_hidden_layers):
                     if ('model.layers.%d.self_attn.q_proj.weight' % i_layer) in weights:

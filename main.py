@@ -2,6 +2,9 @@ import argparse
 import json
 import logging
 import os
+import torch
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
 
 from lm_eval import tasks, evaluator, utils
 
